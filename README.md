@@ -1,5 +1,8 @@
 # AskMyPDF - Chat with your PDF
-
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![Flask](https://img.shields.io/badge/Flask-backend-black)
+![Tests](https://img.shields.io/badge/tests-22%20passing-brightgreen)
+![License](https://img.shields.io/badge/license-MIT-green)
 ## What I built
 A web app where you **upload a PDF and ask questions about it**. The answer comes only from the document and shows **which pages it used**, so you can check it. If the answer is not in the PDF, the app says so instead of guessing.
 
