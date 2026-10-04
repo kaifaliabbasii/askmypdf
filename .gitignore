@@ -1,0 +1,19 @@
+# Secrets: never commit these
+.env
+.env.*
+!.env.example
+*.env.txt
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Your own test documents
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db

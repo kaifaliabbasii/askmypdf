@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AskMyPDF</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #f3f4f6; height: 100vh; height: 100dvh; display: flex; justify-content: center; }
+    .app { width: 100%; max-width: 820px; display: flex; flex-direction: column; background: #fff; box-shadow: 0 0 20px rgba(0,0,0,.08); }
+    header { padding: 14px 18px; background: #0f766e; color: #fff; }
+    header h1 { font-size: 18px; margin: 0; }
+    header small { opacity: .85; }
+
+    #upload { padding: 14px 18px; border-bottom: 1px solid #e5e7eb; background: #f0fdfa; }
+    #drop { border: 2px dashed #5eead4; border-radius: 10px; padding: 18px; text-align: center; color: #115e59; cursor: pointer; background: #fff; }
+    #drop.over { background: #ccfbf1; }
+    #drop strong { display: block; margin-bottom: 4px; }
+    #docinfo { display: none; align-items: center; justify-content: space-between; gap: 10px; }
+    #docinfo span { font-size: 14px; color: #134e4a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #docinfo button { background: #fff; border: 1px solid #5eead4; color: #115e59; border-radius: 6px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+
+    #chat { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 88%; padding: 10px 14px; border-radius: 14px; line-height: 1.5; word-wrap: break-word; }
+    .msg p { margin: 0 0 8px; } .msg p:last-child { margin: 0; }
+    .msg pre { background: #1f2937; color: #f9fafb; padding: 10px; border-radius: 8px; overflow-x: auto; }
+    .user { align-self: flex-end; background: #0f766e; color: #fff; white-space: pre-wrap; }
+    .bot { align-self: flex-start; background: #eef0f4; }
+    .error { align-self: flex-start; background: #fee2e2; color: #991b1b; }
+    .loading { color: #6b7280; font-style: italic; }
+    .sources { margin-top: 8px; font-size: 13px; }
+    .sources summary { cursor: pointer; color: #0f766e; font-weight: 600; }
+    .source { margin-top: 6px; padding: 6px 8px; background: #fff; border-left: 3px solid #5eead4; border-radius: 4px; color: #374151; }
+    .source b { color: #0f766e; }
+
+    #chips { padding: 0 18px 10px; display: none; flex-wrap: wrap; gap: 8px; }
+    #chips button { background: #f0fdfa; color: #115e59; border: 1px solid #99f6e4; border-radius: 999px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
+
+    form { display: flex; gap: 8px; padding: 14px; border-top: 1px solid #e5e7eb; }
+    .field { flex: 1; position: relative; }
+    input[type=text] { width: 100%; padding: 12px 70px 12px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; }
+    input:disabled { background: #f3f4f6; }
+    #counter { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #9ca3af; }
+    form button { padding: 0 20px; background: #0f766e; color: #fff; border: 0; border-radius: 8px; cursor: pointer; font-size: 15px; }
+    form button:disabled { background: #99d8d2; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>📄 AskMyPDF</h1>
+      <small>Upload a PDF and ask questions. Answers come only from your document.</small>
+    </header>
+
+    <div id="upload">
+      <div id="drop" tabindex="0" role="button" aria-label="Choose a PDF file">
+        <strong>Click to choose a PDF, or drop it here</strong>
+        <span>Text PDFs only, up to {{ max_mb }} MB</span>
+      </div>
+      <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+      <div id="docinfo">
+        <span id="docname"></span>
+        <button id="change" type="button">Change PDF</button>
+      </div>
+    </div>
+
+    <div id="chat" aria-live="polite"></div>
+
+    <div id="chips">
+      <button type="button">Summarize this document</button>
+      <button type="button">What are the main points?</button>
+    </div>
+
+    <form id="form">
+      <div class="field">
+        <input id="input" type="text" placeholder="Upload a PDF first..." autocomplete="off" maxlength="{{ max_question }}" disabled />
+        <span id="counter">0/{{ max_question }}</span>
+      </div>
+      <button id="send" type="submit" disabled>Ask</button>
+    </form>
+  </div>
+
+<script>
+  const MAX_CHARS = {{ max_question }};   // comes from the server setting
+  const MAX_MB = {{ max_mb }};
+
+  const chat = document.getElementById("chat");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("send");
+  const counter = document.getElementById("counter");
+  const chips = document.getElementById("chips");
+  const drop = document.getElementById("drop");
+  const fileInput = document.getElementById("file");
+  const docinfo = document.getElementById("docinfo");
+  const docname = document.getElementById("docname");
+
+  let docId = null;     // id of the uploaded document on the server
+  let history = [];     // recent questions and answers, used for follow-up questions
+  let busy = false;
+
+  function addMessage(text, cls, asMarkdown = false) {
+    const div = document.createElement("div");
+    div.className = "msg " + cls;
+    const canRender = typeof marked !== "undefined" && typeof DOMPurify !== "undefined";
+    if (asMarkdown && canRender) {
+      div.innerHTML = DOMPurify.sanitize(marked.parse(text));
+    } else {
+      div.textContent = text;
+    }
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+  }
+
+  function addSources(div, sources) {
+    if (!sources || !sources.length) return;
+    const details = document.createElement("details");
+    details.className = "sources";
+    const summary = document.createElement("summary");
+    const pages = [...new Set(sources.map((s) => s.page))].join(", ");
+    summary.textContent = "Sources: page " + pages;
+    details.appendChild(summary);
+    sources.forEach((s) => {
+      const p = document.createElement("div");
+      p.className = "source";
+      const b = document.createElement("b");
+      b.textContent = "Page " + s.page + ": ";
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(s.snippet + "..."));  // textContent-style, safe
+      details.appendChild(p);
+    });
+    div.appendChild(details);
+  }
+
+  function setBusy(state) {
+    busy = state;
+    sendBtn.disabled = state || !docId;
+    input.disabled = state || !docId;
+    if (!state && docId) input.focus();
+  }
+
+  function updateCounter() {
+    counter.textContent = input.value.length + "/" + MAX_CHARS;
+  }
+
+  function resetChat() {
+    chat.innerHTML = "";
+    history = [];
+    addMessage("Hi! Upload a PDF above, then ask me anything about it 📄", "bot");
+  }
+
+  // ---------- Uploading ----------
+  async function uploadFile(file) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      addMessage("⚠️ Only PDF files are supported.", "error");
+      return;
+    }
+    if (file.size > MAX_MB * 1024 * 1024) {
+      addMessage("⚠️ File is too large. The maximum is " + MAX_MB + " MB.", "error");
+      return;
+    }
+
+    setBusy(true);
+    const loading = addMessage("Reading your PDF...", "bot loading");
+    const body = new FormData();
+    body.append("file", file);
+
+    try {
+      const res = await fetch("/upload", { method: "POST", body });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      loading.remove();
+      if (!res.ok) throw new Error(data.error || "Upload failed (" + res.status + ")");
+
+      docId = data.doc_id;
+      history = [];
+      drop.style.display = "none";
+      docinfo.style.display = "flex";
+      docname.textContent = "📄 " + data.name + " (" + data.pages + " pages)";
+      input.placeholder = "Ask a question about your PDF...";
+      chips.style.display = "flex";
+      addMessage("Ready! I read **" + data.name.replace(/[*_`]/g, "") + "** (" + data.pages + " pages). Ask me a question.", "bot", true);
+    } catch (err) {
+      loading.remove();
+      const msg = err.message === "Failed to fetch" ? "Cannot reach the server. Is it running?" : err.message;
+      addMessage("⚠️ " + msg, "error");
+    } finally {
+      fileInput.value = "";
+      setBusy(false);
+    }
+  }
+
+  drop.addEventListener("click", () => fileInput.click());
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") fileInput.click(); });
+  fileInput.addEventListener("change", () => uploadFile(fileInput.files[0]));
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => {
+    e.preventDefault();
+    drop.classList.remove("over");
+    uploadFile(e.dataTransfer.files[0]);
+  });
+  document.getElementById("change").addEventListener("click", () => {
+    if (busy) return;
+    docId = null;
+    drop.style.display = "block";
+    docinfo.style.display = "none";
+    chips.style.display = "none";
+    input.placeholder = "Upload a PDF first...";
+    setBusy(false);
+    resetChat();
+  });
+
+  // ---------- Asking ----------
+  async function ask(text) {
+    text = text.trim();
+    if (!text || busy || !docId) return;
+    if (text.length > MAX_CHARS) {
+      addMessage("⚠️ Question is too long (maximum " + MAX_CHARS + " characters).", "error");
+      return;
+    }
+
+    chat.querySelectorAll(".error").forEach((e) => e.remove());
+    chips.style.display = "none";
+    const userDiv = addMessage(text, "user");
+    input.value = "";
+    updateCounter();
+
+    setBusy(true);
+    const loading = addMessage("Searching the document...", "bot loading");
+
+    try {
+      const res = await fetch("/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc_id: docId, question: text, history }),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      loading.remove();
+      if (!res.ok) {
+        if (res.status === 404) {   // the server forgot the document (restart or expiry)
+          docId = null;
+          drop.style.display = "block";
+          docinfo.style.display = "none";
+        }
+        throw new Error(data.error || "Server error (" + res.status + ")");
+      }
+
+      history.push({ role: "user", content: text });
+      history.push({ role: "assistant", content: data.reply });
+      history = history.slice(-6);
+      const botDiv = addMessage(data.reply, "bot", true);
+      addSources(botDiv, data.sources);
+      chat.scrollTop = chat.scrollHeight;
+    } catch (err) {
+      loading.remove();
+      userDiv.remove();
+      input.value = text;
+      updateCounter();
+      const msg = err.message === "Failed to fetch" ? "Cannot reach the server. Is it running?" : err.message;
+      addMessage("⚠️ " + msg, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); ask(input.value); });
+  input.addEventListener("input", updateCounter);
+  chips.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => ask(b.textContent)));
+
+  resetChat();
+  updateCounter();
+</script>
+</body>
+</html>
